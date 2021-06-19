@@ -3,9 +3,9 @@ use std::fmt;
 use std::time::Instant;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
-use tracing::{Id, Subscriber};
-use tracing_subscriber::layer::Context;
-use tracing_subscriber::Layer;
+use tracing::{Id, Collect};
+use tracing_subscriber::subscribe::Context;
+use tracing_subscriber::Subscribe;
 
 /// This layer is only concerned with information storage, it does not do any formatting or provide any output.
 ///
@@ -88,13 +88,13 @@ impl Visit for JsonStorage<'_> {
     }
 }
 
-impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer<S>
+impl<C: Collect + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Subscribe<C>
     for JsonStorageLayer
 {
     /// Span creation.
     /// This is the only occasion we have to store the fields attached to the span
     /// given that they might have been borrowed from the surrounding context.
-    fn new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+    fn new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, C>) {
         let span = ctx.span(id).expect("Span not found, this is a bug");
 
         // We want to inherit the fields from the parent span, if there is one.
@@ -120,7 +120,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
         extensions.insert(visitor);
     }
 
-    fn on_record(&self, span: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+    fn on_record(&self, span: &Id, values: &Record<'_>, ctx: Context<'_, C>) {
         let span = ctx.span(span).expect("Span not found, this is a bug");
 
         // Before you can associate a record to an existing Span, well, that Span has to be created!
@@ -135,7 +135,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
     }
 
     /// When we enter a span **for the first time** save the timestamp in its extensions.
-    fn on_enter(&self, span: &Id, ctx: Context<'_, S>) {
+    fn on_enter(&self, span: &Id, ctx: Context<'_, C>) {
         let span = ctx.span(span).expect("Span not found, this is a bug");
 
         let mut extensions = span.extensions_mut();
@@ -145,7 +145,7 @@ impl<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer
     }
 
     /// When we close a span, register how long it took in milliseconds.
-    fn on_close(&self, span: Id, ctx: Context<'_, S>) {
+    fn on_close(&self, span: Id, ctx: Context<'_, C>) {
         let span = ctx.span(&span).expect("Span not found, this is a bug");
 
         // Using a block to drop the immutable reference to extensions

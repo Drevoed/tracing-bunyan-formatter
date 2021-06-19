@@ -18,7 +18,7 @@
 //! use tracing::instrument;
 //! use tracing::info;
 //! use tracing_subscriber::Registry;
-//! use tracing_subscriber::layer::SubscriberExt;
+//! use tracing_subscriber::subscribe::CollectExt;
 //!
 //! #[instrument]
 //! pub fn a_unit_of_work(first_parameter: u64) {
@@ -38,7 +38,7 @@
 //!     let subscriber = Registry::default()
 //!         .with(JsonStorageLayer)
 //!         .with(formatting_layer);
-//!     tracing::subscriber::set_global_default(subscriber).unwrap();
+//!     tracing::collect::set_global_default(subscriber).unwrap();
 //!
 //!     info!("Orphan event without a parent span");
 //!     a_unit_of_work(2);

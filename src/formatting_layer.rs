@@ -3,14 +3,14 @@ use serde::ser::{SerializeMap, Serializer};
 use serde_json::Value;
 use std::fmt;
 use std::io::Write;
-use tracing::{Event, Id, Subscriber};
+use tracing::{Event, Id, Collect};
 use tracing_core::metadata::Level;
 use tracing_core::span::Attributes;
 use tracing_log::AsLog;
 use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::Context;
+use tracing_subscriber::subscribe::Context;
 use tracing_subscriber::registry::SpanRef;
-use tracing_subscriber::Layer;
+use tracing_subscriber::Subscribe;
 
 /// Keys for core fields of the Bunyan format (https://github.com/trentm/node-bunyan#core-fields)
 const BUNYAN_VERSION: &str = "v";
@@ -38,15 +38,15 @@ fn to_bunyan_level(level: &Level) -> u16 {
 /// This layer is exclusively concerned with formatting information using the [Bunyan format](https://github.com/trentm/node-bunyan).
 /// It relies on the upstream `JsonStorageLayer` to get access to the fields attached to
 /// each span.
-pub struct BunyanFormattingLayer<W: MakeWriter + 'static> {
-    make_writer: W,
+pub struct BunyanFormattingLayer<M> {
+    make_writer: M,
     pid: u32,
     hostname: String,
     bunyan_version: u8,
     name: String,
 }
 
-impl<W: MakeWriter + 'static> BunyanFormattingLayer<W> {
+impl<M> BunyanFormattingLayer<M> {
     /// Create a new `BunyanFormattingLayer`.
     ///
     /// You have to specify:
@@ -66,7 +66,9 @@ impl<W: MakeWriter + 'static> BunyanFormattingLayer<W> {
     ///
     /// let formatting_layer = BunyanFormattingLayer::new("tracing_example".into(), || std::io::stdout());
     /// ```
-    pub fn new(name: String, make_writer: W) -> Self {
+    pub fn new(name: String, make_writer: M) -> Self
+    where M: for <'a> MakeWriter<'a> + 'static
+    {
         Self {
             make_writer,
             name,
@@ -93,9 +95,9 @@ impl<W: MakeWriter + 'static> BunyanFormattingLayer<W> {
     }
 
     /// Given a span, it serialised it to a in-memory buffer (vector of bytes).
-    fn serialize_span<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>>(
+    fn serialize_span<C: Collect + for <'a> tracing_subscriber::registry::LookupSpan<'a>>(
         &self,
-        span: &SpanRef<S>,
+        span: &SpanRef<C>,
         ty: Type,
     ) -> Result<Vec<u8>, std::io::Error> {
         let mut buffer = Vec::new();
@@ -132,7 +134,9 @@ impl<W: MakeWriter + 'static> BunyanFormattingLayer<W> {
     /// If we write directly to the writer returned by self.make_writer in more than one go
     /// we can end up with broken/incoherent bits and pieces of those records when
     /// running multi-threaded/concurrent programs.
-    fn emit(&self, mut buffer: Vec<u8>) -> Result<(), std::io::Error> {
+    fn emit(&self, mut buffer: Vec<u8>) -> Result<(), std::io::Error>
+    where M: for <'a> MakeWriter<'a> + 'static
+    {
         buffer.write_all(b"\n")?;
         self.make_writer.make_writer().write_all(&buffer)
     }
@@ -160,8 +164,8 @@ impl fmt::Display for Type {
 /// Ensure consistent formatting of the span context.
 ///
 /// Example: "[AN_INTERESTING_SPAN - START]"
-fn format_span_context<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>>(
-    span: &SpanRef<S>,
+fn format_span_context<C: Collect + for<'a> tracing_subscriber::registry::LookupSpan<'a>>(
+    span: &SpanRef<C>,
     ty: Type,
 ) -> String {
     format!("[{} - {}]", span.metadata().name().to_uppercase(), ty)
@@ -172,8 +176,8 @@ fn format_span_context<S: Subscriber + for<'a> tracing_subscriber::registry::Loo
 /// Examples:
 /// - "[AN_INTERESTING_SPAN - EVENT] My event message" (for an event with a parent span)
 /// - "My event message" (for an event without a parent span)
-fn format_event_message<S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>>(
-    current_span: &Option<SpanRef<S>>,
+fn format_event_message<C: Collect + for<'a> tracing_subscriber::registry::LookupSpan<'a>>(
+    current_span: &Option<SpanRef<C>>,
     event: &Event,
     event_visitor: &JsonStorage<'_>,
 ) -> String {
@@ -197,12 +201,19 @@ fn format_event_message<S: Subscriber + for<'a> tracing_subscriber::registry::Lo
     message
 }
 
-impl<S, W> Layer<S> for BunyanFormattingLayer<W>
+impl<C, M> Subscribe<C> for BunyanFormattingLayer<M>
 where
-    S: Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    W: MakeWriter + 'static,
+    C: Collect + for <'a> tracing_subscriber::registry::LookupSpan<'a>,
+    M: for<'a> MakeWriter<'a> + 'static,
 {
-    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+    fn new_span(&self, _attrs: &Attributes, id: &Id, ctx: Context<'_, C>) {
+        let span = ctx.span(id).expect("Span not found, this is a bug");
+        if let Ok(serialized) = self.serialize_span(&span, Type::EnterSpan) {
+            let _ = self.emit(serialized);
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, C>) {
         // Events do not necessarily happen in the context of a span, hence lookup_current
         // returns an `Option<SpanRef<_>>` instead of a `SpanRef<_>`.
         let current_span = ctx.lookup_current();
@@ -262,14 +273,7 @@ where
         }
     }
 
-    fn new_span(&self, _attrs: &Attributes, id: &Id, ctx: Context<'_, S>) {
-        let span = ctx.span(id).expect("Span not found, this is a bug");
-        if let Ok(serialized) = self.serialize_span(&span, Type::EnterSpan) {
-            let _ = self.emit(serialized);
-        }
-    }
-
-    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+    fn on_close(&self, id: Id, ctx: Context<'_, C>) {
         let span = ctx.span(&id).expect("Span not found, this is a bug");
         if let Ok(serialized) = self.serialize_span(&span, Type::ExitSpan) {
             let _ = self.emit(serialized);

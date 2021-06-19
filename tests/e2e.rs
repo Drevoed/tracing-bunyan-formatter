@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::sync::Mutex;
 use tracing::{info, span, Level};
 use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::subscribe::CollectExt;
 use tracing_subscriber::Registry;
 
 mod mock_writer;
@@ -22,7 +22,7 @@ fn run_and_get_raw_output<F: Fn()>(action: F) -> String {
     let subscriber = Registry::default()
         .with(JsonStorageLayer)
         .with(formatting_layer);
-    tracing::subscriber::with_default(subscriber, action);
+    tracing::collect::with_default(subscriber, action);
 
     // Return the formatted output as a string to make assertions against
     let mut buffer = BUFFER.try_lock().unwrap();
