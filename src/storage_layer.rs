@@ -6,6 +6,7 @@ use tracing::span::{Attributes, Record};
 use tracing::{Id, Collect};
 use tracing_subscriber::subscribe::Context;
 use tracing_subscriber::Subscribe;
+use tracing_subscriber::registry::LookupSpan;
 
 /// This layer is only concerned with information storage, it does not do any formatting or provide any output.
 ///
@@ -88,8 +89,8 @@ impl Visit for JsonStorage<'_> {
     }
 }
 
-impl<C: Collect + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Subscribe<C>
-    for JsonStorageLayer
+impl<C> Subscribe<C> for JsonStorageLayer
+    where C: Collect + for <'a> LookupSpan<'a>
 {
     /// Span creation.
     /// This is the only occasion we have to store the fields attached to the span
